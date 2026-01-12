@@ -67,6 +67,26 @@ exports.login = async (req, res) => {
     }
 };
 
+exports.loginGoogle = async (req, res) => {
+    try {
+        const { data, error } = await supabase.auth.signInWithOAuth({
+            provider: 'google',
+            options: {
+                // Redirect back to frontend after Google login
+                redirectTo: process.env.CLIENT_URL || 'http://localhost:3000'
+            }
+        });
+
+        if (error) throw error;
+
+        // Return the URL for the frontend to redirect the user to
+        res.status(200).json({ url: data.url });
+
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+};
+
 exports.getMe = async (req, res) => {
     // Middleware should have attached user to req
     if (!req.user) {
