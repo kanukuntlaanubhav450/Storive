@@ -13,15 +13,18 @@ import {
     Cloud,
     Plus,
     Users,
-    Settings,
-    LogOut
+    Settings
 } from 'lucide-react';
 import { UploadButton } from '@/components/drive/UploadButton';
+import { useAuth } from '@/hooks/useAuth';
+import { StorageUsage } from '@/components/drive/StorageUsage';
+import { useDrive } from '@/hooks/useDrive';
 
 interface SidebarProps extends React.HTMLAttributes<HTMLDivElement> { }
 
 export function Sidebar({ className }: SidebarProps) {
     const pathname = usePathname();
+    const { refreshDrive } = useDrive();
 
     // Extract current folder ID from pathname if in /dashboard/files/[id]
     const pathParts = pathname?.split('/');
@@ -72,7 +75,7 @@ export function Sidebar({ className }: SidebarProps) {
                     <div className="space-y-1 mt-6">
                         <UploadButton
                             folderId={currentFolderId}
-                            onRefresh={() => window.location.reload()}
+                            onRefresh={refreshDrive}
                         />
 
                         {routes.map((route) => {
@@ -91,19 +94,11 @@ export function Sidebar({ className }: SidebarProps) {
                         })}
                     </div>
                 </div>
-                <div className="py-2 px-3 mt-auto absolute bottom-0 w-full mb-4">
-                    {/* Storage Meter Placeholder */}
-                    <div className="bg-gray-100 dark:bg-gray-800 rounded-lg p-4 mb-4">
-                        <div className="flex justify-between text-xs mb-2">
-                            <span>Storage</span>
-                            <span>75%</span>
-                        </div>
-                        <div className="h-2 bg-gray-200 rounded-full dark:bg-gray-700">
-                            <div className="h-2 bg-primary rounded-full w-3/4"></div>
-                        </div>
-                        <p className="text-xs text-muted-foreground mt-2">7.5 GB of 10 GB used</p>
-                    </div>
-                </div>
+            </div>
+
+            <div className="py-2 px-3 mt-auto absolute bottom-0 w-full mb-4 space-y-2">
+                {/* Storage Meter */}
+                <StorageUsage />
             </div>
         </div>
     );

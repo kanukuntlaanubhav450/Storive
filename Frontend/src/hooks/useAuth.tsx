@@ -1,6 +1,8 @@
 'use client';
 
-import { useState, useEffect, createContext, useContext } from 'react';
+import { useState, useEffect, createContext, useContext, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
+import { toast } from 'sonner';
 
 interface User {
     id: string;
@@ -12,20 +14,21 @@ interface User {
 interface AuthContextType {
     user: User | null;
     loading: boolean;
-    login: () => void; // Trigger re-fetch
+    login: () => Promise<void>; // Trigger re-fetch
     logout: () => void;
 }
 
 const AuthContext = createContext<AuthContextType>({
     user: null,
     loading: true,
-    login: () => { },
+    login: async () => { },
     logout: () => { },
 });
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
     const [user, setUser] = useState<User | null>(null);
     const [loading, setLoading] = useState(true);
+    const router = useRouter();
 
     const fetchUser = async () => {
         try {
@@ -45,33 +48,59 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
     };
 
-    // Improved fetch with cookie support
-    const checkSession = async () => {
+    const checkSession = useCallback(async () => {
         try {
+            const token = localStorage.getItem('access_token');
             // We need to use a proxy or full URL.
             // NEXT_PUBLIC_API_URL is http://localhost:5000/api
             const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/auth/me`, {
                 credentials: 'include',
+                headers: {
+                    'Authorization': token ? `Bearer ${token}` : ''
+                }
             });
             if (res.ok) {
                 const data = await res.json();
                 setUser(data.user);
             } else {
                 setUser(null);
+                // Can't clear localStorage here blindly as it might be a temporary network error,
+                // but if 401/403, we probably should.
+                if (res.status === 401 || res.status === 403) {
+                    localStorage.removeItem('access_token');
+                }
             }
         } catch (err) {
             setUser(null);
         } finally {
             setLoading(false);
         }
-    };
+    }, []);
 
     useEffect(() => {
         checkSession();
     }, []);
 
+    const logout = useCallback(async () => {
+        try {
+            // Call backend to clear cookie
+            await fetch(`${process.env.NEXT_PUBLIC_API_URL}/auth/logout`, {
+                method: 'POST',
+                credentials: 'include',
+            });
+        } catch (error) {
+            console.error('Logout failed', error);
+        } finally {
+            // Clear local state
+            localStorage.removeItem('access_token');
+            setUser(null);
+            toast.success("Logged out", { description: "See you next time!" });
+            router.push('/login');
+        }
+    }, [router]);
+
     return (
-        <AuthContext.Provider value={{ user, loading, login: checkSession, logout: () => setUser(null) }}>
+        <AuthContext.Provider value={{ user, loading, login: checkSession, logout }}>
             {children}
         </AuthContext.Provider>
     );

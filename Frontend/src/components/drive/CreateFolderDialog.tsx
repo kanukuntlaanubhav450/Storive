@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { api } from '@/services/api';
+import { toast } from 'sonner';
 
 export function CreateFolderDialog({
     parentId,
@@ -29,6 +30,7 @@ export function CreateFolderDialog({
             onSuccess();
         } catch (err: any) {
             setError(err.message);
+            toast.error("Failed to create folder", { description: err.message });
         } finally {
             setLoading(false);
         }

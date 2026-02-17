@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -11,6 +11,17 @@ export default function ForgotPasswordPage() {
     const [message, setMessage] = useState('');
     const [error, setError] = useState('');
     const [isLoading, setIsLoading] = useState(false);
+    const [retryAfter, setRetryAfter] = useState(0);
+    const intervalRef = useRef<NodeJS.Timeout | null>(null);
+
+    // Cleanup interval on unmount
+    useEffect(() => {
+        return () => {
+            if (intervalRef.current) {
+                clearInterval(intervalRef.current);
+            }
+        };
+    }, []);
 
     const handleReset = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -19,26 +30,84 @@ export default function ForgotPasswordPage() {
         setMessage('');
 
         try {
-            // NOTE: We need to implement this endpoint on the backend or use Supabase Client directly.
-            // Since we are using Backend APIs, we should hit /api/auth/forgot-password (TODO in Backend)
-            // OR use the supabase client directly here if we had it exposed.
-            // For structure, we fetch to backend. 
-            // We missed finding/adding this endpoint in Backend plan! 
-            // I will use a placeholder or implement backend support shortly.
-            // Let's assume hitting the backend is the plan.
-
             const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/auth/forgot-password`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ email }),
             });
 
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.error || 'Request failed');
+            // Handle rate limit error (429) first, regardless of content-type
+            if (res.status === 429) {
+                let retrySeconds = 60; // Default
+                const retryAfterHeader = res.headers.get('Retry-After');
 
-            setMessage('Check your email for a reset link.');
+                if (retryAfterHeader) {
+                    const parsed = parseInt(retryAfterHeader, 10);
+                    if (!isNaN(parsed)) {
+                        retrySeconds = parsed;
+                    } else {
+                        const date = Date.parse(retryAfterHeader);
+                        if (!isNaN(date)) {
+                            retrySeconds = Math.ceil((date - Date.now()) / 1000);
+                        }
+                    }
+                    if (retrySeconds < 0) retrySeconds = 60;
+                } else {
+                    // Try to extract from JSON if possible
+                    const contentType = res.headers.get('content-type');
+                    if (contentType && contentType.includes('application/json')) {
+                        try {
+                            const data = await res.json();
+                            retrySeconds = data.retryAfter || 60;
+                        } catch (e) { /* fallback to default */ }
+                    }
+                }
+
+                setRetryAfter(retrySeconds);
+
+                // Clear any existing interval before starting a new one
+                if (intervalRef.current) {
+                    clearInterval(intervalRef.current);
+                }
+
+                // Start countdown
+                intervalRef.current = setInterval(() => {
+                    setRetryAfter((prev) => {
+                        if (prev <= 1) {
+                            if (intervalRef.current) {
+                                clearInterval(intervalRef.current);
+                                intervalRef.current = null;
+                            }
+                            return 0;
+                        }
+                        return prev - 1;
+                    });
+                }, 1000);
+
+                throw new Error('Too many attempts. Please wait before trying again.');
+            }
+
+            // For other responses, check content-type before parsing
+            const contentType = res.headers.get('content-type');
+            let data: any = {};
+            if (contentType && contentType.includes('application/json')) {
+                data = await res.json();
+            }
+
+            if (!res.ok) {
+                throw new Error(data.error || 'Request failed');
+            }
+
+            setMessage(data.message || 'Check your email for a reset link.');
         } catch (err: any) {
-            setError(err.message);
+            console.error('Forgot password error:', err);
+
+            // Handle different types of errors
+            if (err.message === 'Failed to fetch') {
+                setError('Unable to connect to server. Please check your internet connection or try again later.');
+            } else {
+                setError(err.message || 'Failed to send reset link');
+            }
         } finally {
             setIsLoading(false);
         }
@@ -70,11 +139,16 @@ export default function ForgotPasswordPage() {
                             </div>
                             {error && <p className="text-sm text-red-500">{error}</p>}
                             {message && <p className="text-sm text-green-500">{message}</p>}
-                            <Button disabled={isLoading}>
+                            {retryAfter > 0 && (
+                                <p className="text-sm text-amber-600">
+                                    Please wait {retryAfter} second{retryAfter !== 1 ? 's' : ''} before trying again.
+                                </p>
+                            )}
+                            <Button disabled={isLoading || retryAfter > 0}>
                                 {isLoading && (
                                     <span className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-b-transparent" />
                                 )}
-                                Send Reset Link
+                                {retryAfter > 0 ? `Wait ${retryAfter}s` : 'Send Reset Link'}
                             </Button>
                         </div>
                     </form>

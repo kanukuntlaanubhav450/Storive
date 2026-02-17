@@ -2,6 +2,13 @@ const supabase = require('../config/supabaseClient');
 
 const authenticateToken = async (req, res, next) => {
     // Check for token in cookies or Authorization header
+    // Debug logging (Safe)
+    if (process.env.NODE_ENV !== 'production') {
+        const hasCookie = !!req.cookies?.access_token;
+        const hasAuthHeader = !!req.headers.authorization;
+        console.log(`[AuthMW] Cookie Present: ${hasCookie}, Auth Header Present: ${hasAuthHeader}`);
+    }
+
     let token = req.cookies?.access_token;
 
     if (!token && req.headers.authorization) {

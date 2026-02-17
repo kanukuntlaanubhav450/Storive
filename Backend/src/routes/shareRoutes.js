@@ -6,6 +6,7 @@ const authMiddleware = require('../middlewares/authMiddleware');
 router.use(authMiddleware);
 
 router.post('/', shareController.shareResource);
+router.get('/', shareController.getShares);
 router.post('/revoke', shareController.unshareResource);
 
 // Public Links
