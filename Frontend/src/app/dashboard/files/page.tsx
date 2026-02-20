@@ -1,6 +1,6 @@
 'use client';
 
-import { use, useState, useEffect } from 'react';
+import { use, useState, useEffect, useRef } from 'react';
 import { FolderBrowser } from '@/components/drive/FolderBrowser';
 import { Grid, List, ChevronRight, Home } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -30,8 +30,15 @@ export default function MyFilesPage({
         }
     }, []);
 
-    // Save view mode to localStorage whenever it changes
+    const isFirstRender = useRef(true);
+
+    // Save view mode to localStorage whenever it changes, but skip the initial mount
+    // to avoid overwriting a previously persisted preference before the load effect runs.
     useEffect(() => {
+        if (isFirstRender.current) {
+            isFirstRender.current = false;
+            return;
+        }
         localStorage.setItem('fileViewMode', viewMode);
     }, [viewMode]);
 
@@ -64,6 +71,7 @@ export default function MyFilesPage({
                         variant={viewMode === 'grid' ? 'default' : 'outline'}
                         size="icon"
                         title="Grid View"
+                        aria-label="Switch to grid view"
                         onClick={() => setViewMode('grid')}
                     >
                         <Grid className="h-4 w-4" />
@@ -72,6 +80,7 @@ export default function MyFilesPage({
                         variant={viewMode === 'list' ? 'default' : 'outline'}
                         size="icon"
                         title="List View"
+                        aria-label="Switch to list view"
                         onClick={() => setViewMode('list')}
                     >
                         <List className="h-4 w-4" />

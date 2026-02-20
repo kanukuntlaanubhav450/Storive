@@ -36,4 +36,15 @@ router.get('/me', authMiddleware, authController.getMe);
 // Logout
 router.post('/logout', authController.logout);
 
+// Dev-only health probe — disabled in non-development environments
+router.get('/debug-health', (req, res) => {
+    if (process.env.NODE_ENV !== 'development') {
+        return res.status(404).json({ error: 'Not found' });
+    }
+    res.json({
+        status: 'ok',
+        timestamp: new Date().toISOString()
+    });
+});
+
 module.exports = router;

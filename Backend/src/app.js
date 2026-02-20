@@ -83,6 +83,42 @@ app.get('/api/search', require('./middlewares/authMiddleware'), require('./contr
 app.use('/api/activity', require('./routes/activityRoutes'));
 
 
+// Redact sensitive fields before logging request body
+const SENSITIVE_FIELDS = new Set([
+    'password', 'password_hash', 'otp', 'otp_hash', 'debug_otp',
+    'token', 'access_token', 'refresh_token', 'secret', 'key',
+    'card_number', 'cvv', 'ssn', 'credit_card'
+]);
+
+function redactBody(body) {
+    if (!body || typeof body !== 'object') return body;
+    const redacted = { ...body };
+    for (const field of Object.keys(redacted)) {
+        if (SENSITIVE_FIELDS.has(field.toLowerCase())) {
+            redacted[field] = '***';
+        }
+    }
+    return redacted;
+}
+
+// Global Error Handler
+app.use((err, req, res, next) => {
+    console.error('------- GLOBAL ERROR HANDLER -------');
+    console.error(`Timestamp: ${new Date().toISOString()}`);
+    console.error(`Method: ${req.method} URL: ${req.url}`);
+    console.error(`Body: ${JSON.stringify(redactBody(req.body))}`);
+    console.error(`Error:`, err);
+    console.error('------------------------------------');
+
+
+    const status = err.status || err.statusCode || 500;
+    const isProduction = process.env.NODE_ENV === 'production';
+
+    res.status(status).json({
+        error: isProduction ? 'Internal Server Error' : (err.message || 'Internal Server Error'),
+        ...(isProduction ? {} : { stack: err.stack })
+    });
+});
 
 app.get('/', (req, res) => {
     res.send('Storive API is running...');

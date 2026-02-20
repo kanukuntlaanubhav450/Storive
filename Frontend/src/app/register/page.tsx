@@ -105,9 +105,10 @@ export default function RegisterPage() {
 
         try {
             await api.verifyOTP({ email, otp: otpCode });
-            // Success! Redirect to login
-            toast.success("Account created successfully!", { description: "Please log in to continue." });
-            router.push('/login?registered=true');
+
+            // Success! Go directly to dashboard — session is carried via HttpOnly cookie
+            toast.success("Account created successfully!", { description: "Welcome to Storive!" });
+            router.push('/dashboard');
         } catch (err: any) {
             setError(err.message);
             toast.error("Verification failed", { description: err.message });
@@ -117,6 +118,7 @@ export default function RegisterPage() {
         } finally {
             setIsLoading(false);
         }
+
     };
 
     const handleResendOTP = async () => {

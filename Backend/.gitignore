@@ -20,3 +20,6 @@ Thumbs.db
 # Testing
 coverage/
 .nyc_output/
+
+# Dev-only scripts — must not reach VCS or production
+trigger_signup.js

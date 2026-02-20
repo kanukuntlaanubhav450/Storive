@@ -45,10 +45,10 @@ exports.sendOTP = async (req, res) => {
         const otpHash = await bcrypt.hash(otp, 10);
 
         // Encrypt password for temporary storage
-        // Security Improvement: Use reversible encryption instead of raw storage
         const passwordHash = encrypt(password);
+        if (!passwordHash) throw new Error('Encryption failed');
 
-        // Store in memory (Always, as a robust backup)
+        // Store in memory
         otpStore.set(email, {
             email,
             name,
@@ -66,40 +66,52 @@ exports.sendOTP = async (req, res) => {
 
         let usedFallback = false;
 
-        // Try Database
-        const { error: upsertError } = await supabase
-            .from('pending_registrations')
-            .upsert({
-                email: email,
-                name: name,
-                password_hash: passwordHash,
-                otp_hash: otpHash,
-                otp_expires_at: otpExpiresAt.toISOString(),
-            }, {
-                onConflict: 'email'
-            });
+        const upsertData = {
+            email: email,
+            name: name,
+            password_hash: passwordHash,
+            otp_expires_at: otpExpiresAt.toISOString(),
+        };
 
-        // Loop 'if' is now just for logging error
-        if (upsertError) {
-            console.error('Database Error (using in-memory fallback):', upsertError.message, upsertError);
-            usedFallback = true;
+        // Attempt with new column name
+        let { error: upsertError } = await supabase
+            .from('pending_registrations')
+            .upsert({ ...upsertData, otp_hash: otpHash }, { onConflict: 'email' });
+
+        // Fallback for stale PostgREST cache
+        if (upsertError && upsertError.code === 'PGRST204' && upsertError.message.includes('otp_hash')) {
+            const { error: fallbackError } = await supabase
+                .from('pending_registrations')
+                .upsert({ ...upsertData, otp: otpHash }, { onConflict: 'email' });
+            upsertError = fallbackError;
         }
 
-
+        if (upsertError) {
+            console.error('Registration DB upsert warning:', upsertError.message);
+            usedFallback = true;
+        }
 
         // Send OTP email
         await sendOTPEmail(email, otp, name);
 
+        // Development-only: Log OTP to console for easy access
+        if (process.env.NODE_ENV !== 'production') {
+            console.log('\n----------------------------------------');
+            console.log(`[DEV] OTP for ${email}: ${otp}`);
+            console.log('----------------------------------------\n');
+        }
+
         res.status(200).json({
             message: 'OTP sent successfully. Please check your email.',
             email: email, // Return email so frontend knows which email to display
-            warning: usedFallback ? 'Running in fallback mode (db error)' : undefined,
-            debug_otp: process.env.NODE_ENV !== 'production' ? otp : undefined // Dev helper
+            warning: usedFallback ? 'Running in fallback mode (db error)' : undefined
         });
 
     } catch (error) {
         console.error('Send OTP error:', error);
-        res.status(500).json({ error: 'An error occurred. Please try again.' });
+        res.status(500).json({
+            error: 'An error occurred. Please try again.'
+        });
     }
 };
 
@@ -145,6 +157,9 @@ exports.verifyOTP = async (req, res) => {
             return res.status(400).json({ error: 'No pending registration found. Please check your email or start over.' });
         }
 
+        // Get the hash - handle both column names
+        const hashToVerify = pending.otp_hash || pending.otp;
+
         // Check if OTP is expired
         if (new Date(pending.otp_expires_at) < new Date()) {
             // Cleanup expired - Always try to remove from both stores
@@ -157,13 +172,13 @@ exports.verifyOTP = async (req, res) => {
         }
 
         // Verify OTP
-        if (!pending.otp_hash || typeof pending.otp_hash !== 'string') {
+        if (!hashToVerify || typeof hashToVerify !== 'string') {
             const { maskEmail } = require('../utils/logUtils');
             console.error(`[VerifyOTP] OTP hash missing or invalid for ${maskEmail(email)}`);
             return res.status(400).json({ error: 'OTP not set for this request. Please request a new one.' });
         }
 
-        const isOtpMatch = await bcrypt.compare(otp, pending.otp_hash);
+        const isOtpMatch = await bcrypt.compare(otp, hashToVerify);
         if (!isOtpMatch) {
             return res.status(400).json({ error: 'Invalid OTP. Please try again.' });
         }
@@ -232,10 +247,38 @@ exports.verifyOTP = async (req, res) => {
         }
         otpStore.delete(email);
 
-        res.status(201).json({
-            message: 'Registration successful! You can now sign in.',
+        // Auto-login: sign the newly created user in to get a session token
+        let sessionToken = null;
+        try {
+            const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
+                email: email,
+                password: passwordToUse,
+            });
+
+            if (!signInError && signInData?.session) {
+                sessionToken = signInData.session.access_token;
+
+                // Set Access Token as HttpOnly cookie (same as login endpoint)
+                res.cookie('access_token', sessionToken, {
+                    httpOnly: true,
+                    secure: process.env.NODE_ENV === 'production',
+                    sameSite: 'lax',
+                    path: '/',
+                    maxAge: 3600 * 1000, // 1 hour
+                });
+            }
+        } catch (signInErr) {
+            console.warn('[verifyOTP] Auto-login after registration failed (non-critical):', signInErr.message);
+        }
+
+        const responseData = {
+            message: 'Registration successful! You are now signed in.',
             userId: userId
-        });
+        };
+
+
+        res.status(201).json(responseData);
+
 
     } catch (error) {
         console.error('Verify OTP error:', error);
@@ -259,43 +302,77 @@ exports.resendOTP = async (req, res) => {
     try {
         let name = 'User';
         let found = false;
+        let existingPasswordHash = null;
 
-        // Try DB
-        const { data: pending } = await supabase.from('pending_registrations').select('name').eq('email', email).single();
+        // Try DB first — select password_hash too so we can preserve it
+        const { data: pending } = await supabase
+            .from('pending_registrations')
+            .select('name, password_hash, otp_hash')
+            .eq('email', email)
+            .single();
+
         if (pending) {
             name = pending.name;
+            // password_hash column name may vary depending on schema version
+            existingPasswordHash = pending.password_hash || pending.otp_hash || null;
             found = true;
         } else if (otpStore.has(email)) {
-            name = otpStore.get(email).name;
+            const stored = otpStore.get(email);
+            name = stored.name;
+            existingPasswordHash = stored.password_hash || null;
             found = true;
         }
 
         if (!found) return res.status(400).json({ error: 'No pending registration.' });
 
+        // Guard: if we cannot recover the encrypted password we cannot complete
+        // registration later, so fail now rather than silently corrupt the flow.
+        if (!existingPasswordHash || existingPasswordHash === 'RETAIN') {
+            console.error(`[resendOTP] Cannot find stored password_hash for ${email} — aborting resend.`);
+            return res.status(400).json({ error: 'Registration session expired. Please start the sign-up process again.' });
+        }
+
+        // ... (Existing logic continues)
         const otp = generateOTP();
         const otpExpiresAt = new Date(Date.now() + 5 * 60 * 1000);
         const otpHash = await bcrypt.hash(otp, 10);
 
-        // Update both just in case
-        if (otpStore.has(email)) {
-            const data = otpStore.get(email);
-            data.otp_hash = otpHash;
-            data.otp_expires_at = otpExpiresAt;
-            otpStore.set(email, data);
+        // Update both Memory and DB — preserve the real encrypted password_hash
+        otpStore.set(email, { email, name, password_hash: existingPasswordHash, otp_hash: otpHash, otp_expires_at: otpExpiresAt });
+
+        const upsertData = { email, name, otp_expires_at: otpExpiresAt.toISOString() };
+
+        let { error: upsertError } = await supabase
+            .from('pending_registrations')
+            .upsert({ ...upsertData, otp_hash: otpHash }, { onConflict: 'email' });
+
+        // Fallback for stale schema cache
+        if (upsertError && upsertError.code === 'PGRST204') {
+            const { error: fallbackError } = await supabase
+                .from('pending_registrations')
+                .upsert({ ...upsertData, otp: otpHash }, { onConflict: 'email' });
+            upsertError = fallbackError;
         }
 
-        // Try DB update
-        await supabase.from('pending_registrations').update({
-            otp_hash: otpHash, otp_expires_at: otpExpiresAt.toISOString()
-        }).eq('email', email);
-
         await sendOTPEmail(email, otp, name);
+
+        // Development-only: Log OTP to console for easy access
+        if (process.env.NODE_ENV !== 'production') {
+            console.log('\n----------------------------------------');
+            console.log(`[DEV RESEND] OTP for ${email}: ${otp}`);
+            console.log('----------------------------------------\n');
+        }
+
         res.status(200).json({
-            message: 'New OTP sent.',
+            message: 'OTP resent successfully',
             debug_otp: process.env.NODE_ENV !== 'production' ? otp : undefined
         });
 
-    } catch (e) {
-        res.status(500).json({ error: 'Error resending OTP' });
+    } catch (error) {
+        console.error('Resend OTP error:', error);
+        res.status(500).json({
+            error: 'An error occurred. Please try again.'
+        });
     }
 };
+
